@@ -59,6 +59,7 @@ type Options struct {
 	Cache         *cache.Cache // nil: online songs are not kept
 	Router        *routing.Router
 	Feiniu        *feiniu.Manager   // nil: no 飞牛音乐 in this server
+	FnOnline      *FeiniuOnline     // nil: the online search does not ask 飞牛音乐
 	Netease       *online.Netease   // nil: no 网易云 login
 	Live          *live.Hub         // nil: no live view
 	Home          *home.Tracker     // nil: no endpoint for home automation
@@ -235,6 +236,11 @@ func (s *Server) Handler() http.Handler {
 	if s.Stream != nil {
 		// Speakers fetch audio without a login; the unguessable token is the access control.
 		mux.Handle("GET /stream/", s.Stream)
+	}
+	if s.FnOnline != nil {
+		// Only this process fetches it: the HMAC signature is the access
+		// control, and the handler refuses anything but a loopback caller.
+		mux.HandleFunc("GET /internal/fn/{guid}", s.FnOnline.serve)
 	}
 
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) {

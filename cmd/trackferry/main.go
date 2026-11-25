@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"runtime"
 	"slices"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 	_ "time/tzdata" // the runtime image has no zoneinfo
@@ -318,12 +320,22 @@ func serve() error {
 	go fn.Run(ctx)
 	go lib.Run(ctx, 6*time.Hour)
 	client := online.Client()
+	// 2026-11-25 patch: ask 飞牛音乐 first. An enhanced 飞牛音乐 (飞牛音乐增强)
+	// answers with its library plus its online catalogue, and its audio is read
+	// through it over a signed loopback address. The four public sources stay in
+	// the list as the fallback for whatever 飞牛音乐 does not have.
+	fnKey := make([]byte, 32)
+	if _, err := rand.Read(fnKey); err != nil {
+		return err
+	}
+	fnOnline := api.NewFeiniuOnline(fn.Open, cfg.Listen, fnKey)
 	netease := &online.Netease{Client: client, File: filepath.Join(private, "netease.json")}
 	if err := netease.Load(); err != nil {
 		log.Warn("网易云　登录记录读不出来，按没登录处理")
 	}
 	go netease.Run(ctx)
-	sources := online.New(log, client, &online.Kuwo{Client: client}, &online.Kugou{Client: client}, &online.Migu{Client: client}, netease)
+	sources := online.New(log, client, &online.Feiniu{Cat: feiniuCatalogue{fn: fn, link: fnOnline.Link}},
+		&online.Kuwo{Client: client}, &online.Kugou{Client: client}, &online.Migu{Client: client}, netease)
 	router := &routing.Router{Library: lib, Online: sources, Log: log, Openable: streams.Openable}
 	router.LoadSettings(ctx, st)
 	kept, err := openCache(cfg.DataDir, cacheLimit(ctx, st), log)
@@ -416,7 +428,7 @@ func serve() error {
 	srv := api.New(api.Options{
 		Config: cfg, Store: st, Token: token, SetupCodePath: setupCodePath,
 		Build: api.Build{Version: version, Commit: commit}, Boot: boot,
-		Xiaomi: xm, Observer: obs, Engine: engine, Stream: streams, Library: lib, Cache: kept, Router: router, Feiniu: fn, Netease: netease, Live: hub, Home: atHome, Played: played, Dispatcher: dispatcher, Web: webui.Handler(), Log: log, Update: checker, SetupLog: showCode,
+		Xiaomi: xm, Observer: obs, Engine: engine, Stream: streams, Library: lib, Cache: kept, Router: router, Feiniu: fn, FnOnline: fnOnline, Netease: netease, Live: hub, Home: atHome, Played: played, Dispatcher: dispatcher, Web: webui.Handler(), Log: log, Update: checker, SetupLog: showCode,
 	})
 	httpSrv := &http.Server{
 		Addr:              cfg.Listen,
@@ -580,3 +592,34 @@ func cacheLimit(ctx context.Context, st *store.Store) int {
 	}
 	return cache.DefaultMB
 }
+
+// feiniuCatalogue adapts 飞牛音乐 to what the online search needs (2026-11-25 patch).
+type feiniuCatalogue struct {
+	fn   *feiniu.Manager
+	link func(string) string
+}
+
+func (c feiniuCatalogue) SearchFeiniu(ctx context.Context, q string) ([]online.FeiniuSong, error) {
+	songs, err := c.fn.Search(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]online.FeiniuSong, 0, len(songs))
+	for _, s := range songs {
+		names := make([]string, 0, len(s.Artists))
+		for _, a := range s.Artists {
+			if a.Name != "" {
+				names = append(names, a.Name)
+			}
+		}
+		out = append(out, online.FeiniuSong{
+			GUID:       s.GUID,
+			Title:      s.Title,
+			Artist:     strings.Join(names, "、"),
+			DurationMS: int64(s.Duration),
+		})
+	}
+	return out, nil
+}
+
+func (c feiniuCatalogue) FeiniuLink(guid string) string { return c.link(guid) }

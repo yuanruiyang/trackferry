@@ -33,6 +33,29 @@ func (m *Manager) Playlists(ctx context.Context) ([]Playlist, error) {
 	return out.List, err
 }
 
+// Search asks 飞牛音乐 for songs matching kw. An enhanced 飞牛音乐 answers with
+// its library plus the online catalogue it adds (paths under online/), so a hit
+// may be a song that has no local file at all.
+func (m *Manager) Search(ctx context.Context, kw string) ([]Song, error) {
+	c, err := m.client()
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		List []Song `json:"list"`
+	}
+	q := url.Values{
+		"keyword":  {kw},
+		"q":        {kw},
+		"page":     {"1"},
+		"pageSize": {"30"},
+		"lan":      {"zh-CN"},
+	}
+	err = c.call(ctx, http.MethodGet, "/search/track", q, nil, &out)
+	m.note(c, err)
+	return out.List, err
+}
+
 // PlaylistSongs reads a playlist.
 func (m *Manager) PlaylistSongs(ctx context.Context, guid string) ([]Song, error) {
 	if !idRe.MatchString(guid) {

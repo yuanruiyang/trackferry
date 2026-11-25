@@ -284,7 +284,11 @@ func (m *Manager) Favorite(ctx context.Context, guid string, on bool) error {
 	return err
 }
 
-var idRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+// 2026-11-25 patch: ':' is allowed because 飞牛音乐增强 lists its platform
+// playlists with guids like "online:playlist:plt:kg:6666". The old pattern
+// rejected them before the request was sent ("bad playlist id"), so every
+// platform playlist failed with 502 even though 飞牛音乐 serves it fine.
+var idRe = regexp.MustCompile(`^[A-Za-z0-9:_-]{1,96}$`)
 
 // Cover opens a cover image.
 func (m *Manager) Cover(ctx context.Context, id string, size string) (*http.Response, error) {
