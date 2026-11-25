@@ -346,6 +346,33 @@ func ID3Size(b []byte) int64 {
 
 // MP3Duration estimates the play length of an MP3 whose frames start in b and continue for
 // size bytes; 0 when b holds no MP3 frames.
+// FLACDuration reads the play length of a FLAC stream from its first bytes.
+// The STREAMINFO block carries sample rate and total samples; 0 means unknown.
+func FLACDuration(b []byte) time.Duration {
+	if len(b) < 42 || string(b[:4]) != "fLaC" {
+		return 0
+	}
+	for p, n := 4, 0; p+4 <= len(b) && n < 16; n++ {
+		typ := b[p] & 0x7f
+		size := int(b[p+1])<<16 | int(b[p+2])<<8 | int(b[p+3])
+		p += 4
+		if typ == 0 {
+			if p+18 > len(b) {
+				return 0
+			}
+			v := binary.BigEndian.Uint64(b[p+10 : p+18])
+			rate := v >> 44
+			samples := v & 0xfffffffff
+			if rate == 0 || samples == 0 {
+				return 0
+			}
+			return time.Duration(samples / rate * uint64(time.Second))
+		}
+		p += size
+	}
+	return 0
+}
+
 func MP3Duration(b []byte, size int64) time.Duration {
 	var m Meta
 	frames(b, size, &m)

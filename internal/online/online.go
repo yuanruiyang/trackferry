@@ -584,9 +584,14 @@ func (s *Service) check(ctx context.Context, u string, want time.Duration, local
 			body = body[n:]
 		}
 	}
+	// 飞牛音乐会按原始音质给流（同一首歌可能是 FLAC，也可能是 MP3），
+	// 本地曲库里的 FLAC 音箱本来就放得了，这里一并接受。
 	d := audio.MP3Duration(body, total-off)
 	if d == 0 {
-		return Stream{}, fmt.Errorf("%w（不是 MP3，类型 %.24q，%d 字节）", ErrNoAudio, ctype, total)
+		d = audio.FLACDuration(body)
+	}
+	if d == 0 {
+		return Stream{}, fmt.Errorf("%w（不是 MP3/FLAC，类型 %.24q，%d 字节）", ErrNoAudio, ctype, total)
 	}
 	if d < shortestSong && (want == 0 || want >= shortestSong) || want > 0 && float64(d) < minFullShare*float64(want) {
 		return Stream{}, ErrTrial
