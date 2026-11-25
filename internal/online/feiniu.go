@@ -41,6 +41,10 @@ type Feiniu struct{ Cat FeiniuCatalogue }
 // Name is the source name shown in the UI and used by the switch.
 func (f *Feiniu) Name() string { return "feiniu" }
 
+// ServesLocally tells the service that this source hands out a loopback address
+// which only this process can read: the SSRF guard on the probe must not apply.
+func (f *Feiniu) ServesLocally() bool { return true }
+
 // Search asks 飞牛音乐. It stays silent about what it cannot do: an error here
 // only means this source missed, the other sources are still asked.
 func (f *Feiniu) Search(ctx context.Context, q string) ([]Candidate, error) {

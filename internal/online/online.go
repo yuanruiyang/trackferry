@@ -54,6 +54,17 @@ type Stream struct {
 	Type     string
 }
 
+// LocalAudio marks a source whose audio is served by this machine itself
+// (飞牛音乐 over its signed loopback address). The private-address guard on the
+// probe exists to stop a public platform from steering requests inward; such a
+// source is trusted past it, nothing else is.
+type LocalAudio interface{ ServesLocally() bool }
+
+func servesLocally(src Source) bool {
+	l, ok := src.(LocalAudio)
+	return ok && l.ServesLocally()
+}
+
 // Source is one platform.
 type Source interface {
 	Name() string
@@ -134,6 +145,7 @@ const (
 type Service struct {
 	log   *slog.Logger
 	probe *http.Client
+	local *http.Client // for sources that serve audio from this machine
 	mu    sync.Mutex
 	srcs  []*entry
 	sem   chan struct{}
@@ -145,7 +157,7 @@ type Service struct {
 
 // New returns a Service over sources in order of preference, all enabled.
 func New(log *slog.Logger, client *http.Client, sources ...Source) *Service {
-	s := &Service{log: log, probe: client, sem: make(chan struct{}, 4)}
+	s := &Service{log: log, probe: client, local: localClient(), sem: make(chan struct{}, 4)}
 	for _, x := range sources {
 		s.srcs = append(s.srcs, &entry{src: x, enabled: true, h: Health{Source: x.Name()}})
 	}
@@ -541,17 +553,20 @@ type freely struct {
 
 func (f freely) Resolve(ctx context.Context, c Candidate) (string, error) { return f.resolve(ctx, c) }
 
+// ServesLocally carries the source's own answer across the wrapper.
+func (f freely) ServesLocally() bool { return servesLocally(f.Source) }
+
 func (s *Service) tryOne(ctx context.Context, src Source, c Candidate) (Stream, error) {
 	u, err := s.address(ctx, src, c)
 	if err != nil {
 		return Stream{}, err
 	}
-	return s.check(ctx, u, c.Duration)
+	return s.check(ctx, u, c.Duration, servesLocally(src))
 }
 
 // check probes an address: it must answer with audio about as long as the song.
-func (s *Service) check(ctx context.Context, u string, want time.Duration) (Stream, error) {
-	body, total, ctype, err := s.fetch(ctx, u, 0)
+func (s *Service) check(ctx context.Context, u string, want time.Duration, local bool) (Stream, error) {
+	body, total, ctype, err := s.fetch(ctx, u, 0, local)
 	if err != nil {
 		return Stream{}, err
 	}
@@ -562,7 +577,7 @@ func (s *Service) check(ctx context.Context, u string, want time.Duration) (Stre
 			if n >= total {
 				return Stream{}, ErrNoAudio
 			}
-			if body, _, _, err = s.fetch(ctx, u, n); err != nil {
+			if body, _, _, err = s.fetch(ctx, u, n, local); err != nil {
 				return Stream{}, err
 			}
 		} else {
@@ -579,14 +594,18 @@ func (s *Service) check(ctx context.Context, u string, want time.Duration) (Stre
 	return Stream{URL: u, Duration: d, Type: ctype}, nil
 }
 
-func (s *Service) fetch(ctx context.Context, u string, from int64) (b []byte, total int64, ctype string, err error) {
+func (s *Service) fetch(ctx context.Context, u string, from int64, local bool) (b []byte, total int64, ctype string, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, 0, "", ErrNoAudio
 	}
 	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", from, from+32<<10-1))
-	resp, err := s.probe.Do(req)
+	hc := s.probe
+	if local {
+		hc = s.local
+	}
+	resp, err := hc.Do(req)
 	if err != nil {
 		return nil, 0, "", err
 	}
@@ -627,6 +646,10 @@ func (s *Service) Opener(f *Found) func(ctx context.Context, rng string) (*http.
 			src = e.src
 		}
 	}
+	hc := s.probe
+	if servesLocally(src) {
+		hc = s.local
+	}
 	return func(ctx context.Context, rng string) (*http.Response, error) {
 		for try := 0; ; try++ {
 			mu.Lock()
@@ -640,7 +663,7 @@ func (s *Service) Opener(f *Found) func(ctx context.Context, rng string) (*http.
 			if rng != "" {
 				req.Header.Set("Range", rng)
 			}
-			resp, err := s.probe.Do(req)
+			resp, err := hc.Do(req)
 			if err == nil && (resp.StatusCode < 400 || resp.StatusCode == http.StatusRequestedRangeNotSatisfiable) {
 				return resp, nil
 			}
@@ -684,6 +707,16 @@ func allowedHost(h string) bool {
 
 // Client returns the HTTP client for the platforms: it only reaches their own domains and
 // never a private address, whatever an answer or redirect says.
+// localClient may reach this machine. The private-address guard exists for
+// public platforms, and would also refuse the loopback address a local source
+// hands out, so this one has no such guard.
+func localClient() *http.Client {
+	d := &net.Dialer{Timeout: 3 * time.Second}
+	tr := &http.Transport{DialContext: d.DialContext, ResponseHeaderTimeout: 8 * time.Second,
+		MaxIdleConnsPerHost: 4, IdleConnTimeout: time.Minute}
+	return &http.Client{Transport: tr}
+}
+
 func Client() *http.Client {
 	d := &net.Dialer{Timeout: 3 * time.Second, Control: func(_, addr string, _ syscall.RawConn) error {
 		ap, err := netip.ParseAddrPort(addr)
